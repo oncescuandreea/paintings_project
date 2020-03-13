@@ -5,9 +5,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torchvision
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms, utils
+
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 
 
 class paintingsDataset(Dataset):
@@ -60,28 +65,46 @@ class paintingsDataset(Dataset):
         img = Image.open(self.images[idx])
         if self.transform is not None:
             img = self.transform(img)
+        # img = np.array(img)
         return img, label
 
+def imshow(img):
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
+    plt.show()
 
+transform = transforms.Compose([transforms.Resize(256),
+                            transforms.CenterCrop(256),
+                            transforms.ToTensor()])
 paintings_train = paintingsDataset(
     data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
     csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
-    split='train')
-paintings_val = paintingsDataset(
-    data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
-    csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
-    split='val')
-paintings_test= paintingsDataset(
-    data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
-    csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
-    split='test')
+    split='train', transform=transform)
+# paintings_val = paintingsDataset(
+#     data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
+#     csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
+#     split='val')
+# paintings_test= paintingsDataset(
+#     data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
+#     csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
+#     split='test')
+train_loader = torch.utils.data.DataLoader(paintings_train,
+                                             batch_size=4, shuffle=True,
+                                             num_workers=4)
+# val_loader = torch.utils.data.DataLoader(paintings_val,
+#                                              batch_size=4, shuffle=True,
+#                                              num_workers=4)
+# test_loader = torch.utils.data.DataLoader(paintings_test,
+#                                              batch_size=4, shuffle=True,
+#                                              num_workers=4)
 
-fig = plt.figure()
+# for i in range(0,3):
+#     img, label = paintings_train[i]
+#     print(i, img.size, label)
 
-# for i in range(len(paintings_dataset)):
-#    img, label = paintings_dataset[i]
-#    print(i, img.size, label)
+dataiter = iter(train_loader)
+images, labels = dataiter.next()
 
-# test_set = paintings_dataset[876:]
-# train_set, val_set = torch.utils.data.random_split(paintings_dataset,
-#                 [657, len(paintings_dataset) - len(test_set)
+imshow(torchvision.utils.make_grid(images))
+plt.savefig('test.jpg')
+print(' '.join('%d' % labels[j] for j in range(4)))
