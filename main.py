@@ -11,7 +11,7 @@ from torchvision import transforms, utils
 
 
 class paintingsDataset(Dataset):
-    def __init__(self, data_dir, csv_file_path, transform=None):
+    def __init__(self, data_dir, csv_file_path, split, transform=None):
         """
         Args:
             csv_file_path: Path to the csv file with document names, gender and other info
@@ -24,7 +24,6 @@ class paintingsDataset(Dataset):
         self.data_dir = data_dir
         images = []
         labels = []
-        imgs = []
         pattern = r'(\w+)-(\w+)_(\d+)'
         number_pattern = r'(\d+)'
         for i, img in enumerate(csv_contents['img_file']):
@@ -33,17 +32,22 @@ class paintingsDataset(Dataset):
             if f"{name_and_date}-{number}.jpg" in os.listdir(self.data_dir):
                 images.append(f"{self.data_dir}/{img}")
                 labels.append(csv_contents['gender'][i])
-                imgs.append(img)
             else:
                 if f"{name_and_date}_{number}.jpg" in os.listdir(self.data_dir):
                     images.append(f"{self.data_dir}/{name_and_date}_{number}.jpg")
-                    imgs.append(f"{name_and_date}_{number}.jpg")
                     labels.append(csv_contents['gender'][i])
-                else:
-                    print(img)
-        self.labels = labels
-        self.images = images
-        self.imgs = imgs
+        train_size = int(np.floor(len(labels)*0.6))
+        val_size = int(np.floor(len(labels)*0.2))
+        if split == 'train':
+            self.labels = labels[0:train_size]
+            self.images = images[0:train_size]
+        elif split == 'val':
+            self.labels = labels[train_size:train_size+val_size]
+            self.images = images[train_size:train_size+val_size]
+        else:
+            self.labels = labels[train_size+val_size:]
+            self.images = images[train_size+val_size:]
+
         self.transform = transform
 
     def __len__(self):
@@ -59,12 +63,19 @@ class paintingsDataset(Dataset):
         return img, label
 
 
-paintings_dataset = paintingsDataset(
+paintings_train = paintingsDataset(
     data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
-    csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0")
-for el in os.listdir(paintings_dataset.data_dir):
-    if el not in paintings_dataset.imgs:
-        print(el)
+    csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
+    split='train')
+paintings_val = paintingsDataset(
+    data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
+    csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
+    split='val')
+paintings_test= paintingsDataset(
+    data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
+    csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
+    split='test')
+
 fig = plt.figure()
 
 # for i in range(len(paintings_dataset)):
@@ -73,4 +84,4 @@ fig = plt.figure()
 
 # test_set = paintings_dataset[876:]
 # train_set, val_set = torch.utils.data.random_split(paintings_dataset,
-#                 [657, len(paintings_dataset) - len(test_set)])
+#                 [657, len(paintings_dataset) - len(test_set)
