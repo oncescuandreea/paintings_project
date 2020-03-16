@@ -1,20 +1,19 @@
 import os
 import re
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-import torchvision
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms, utils
-
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torchvision
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 
-from datetime import datetime
 
 class Net(nn.Module):
     def __init__(self):
@@ -60,7 +59,7 @@ class paintingsDataset(Dataset):
                 images.append(f"{self.data_dir}/{img}")
                 labels.append(csv_contents['gender'][i])
             else:
-                if f"{name_and_date}_{number}.jpg" in list_of_images_folder: 
+                if f"{name_and_date}_{number}.jpg" in list_of_images_folder:
                     images.append(f"{self.data_dir}/{name_and_date}_{number}.jpg")
                     labels.append(csv_contents['gender'][i])
         train_size = int(np.floor(len(labels)*0.6))
@@ -96,16 +95,15 @@ def imshow(img):
     plt.show()
 
 def train(Path, transform, device):
-    
     paintings_train = paintingsDataset(
-            data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
+        data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
         csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
         split='train', transform=transform)
-    imag, label = paintings_train[0]
+    imag, _ = paintings_train[0]
     print(imag.size())
     train_loader = torch.utils.data.DataLoader(paintings_train,
-                                             batch_size=4, shuffle=True,
-                                             num_workers=4, drop_last=True)
+                                               batch_size=4, shuffle=True,
+                                               num_workers=4, drop_last=True)
     dataiter = iter(train_loader)
     images, labels = dataiter.next()
 
@@ -130,9 +128,8 @@ def train(Path, transform, device):
             running_loss += loss.item()
             if i % 10 == 9:
                 print('[%d, %5d] loss:%.3f' %
-                (epoch + 1, i + 1, running_loss/100))
+                      (epoch + 1, i + 1, running_loss/100))
                 running_loss = 0.0
-    
     torch.save(net, Path)
     print('Finished Training')
 
@@ -147,8 +144,8 @@ def testval(Path, transform, split, device):
         split=split, transform=transform)
 
     loader = torch.utils.data.DataLoader(paintings,
-                                            batch_size=4, shuffle=True,
-                                            num_workers=4, drop_last=True)
+                                         batch_size=4, shuffle=True,
+                                         num_workers=4, drop_last=True)
 
     correct = 0
     total = 0
@@ -160,7 +157,7 @@ def testval(Path, transform, split, device):
             total += labels.size(0)
             correct += (predicted == labels.float()).sum().item()
     print('Accuracy of the network on the validation set is: %d %%' %
-        (100*correct/total))
+          (100*correct/total))
     print('correct: %d' % correct)
     print('total: %d ' % total)
 
@@ -169,8 +166,8 @@ def main():
     startTime = datetime.now()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     transform = transforms.Compose([transforms.Resize(256),
-                            transforms.CenterCrop(256),
-                            transforms.ToTensor()])
+                                    transforms.CenterCrop(256),
+                                    transforms.ToTensor()])
     Path = "/users/oncescu/coding/libs/pt/pictures_project/model.pt"
     train(Path, transform, device)
     testval(Path, transform, 'val', device)
