@@ -22,7 +22,7 @@ class Net(nn.Module):
         self.conv2 = nn.Conv2d(6, 16, 5)
         self.fc1 = nn.Linear(16 * 61 * 61, 120)
         self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 1)
+        self.fc3 = nn.Linear(84, 2)
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
@@ -30,7 +30,7 @@ class Net(nn.Module):
         x = x.view(-1, 16 * 61 * 61)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = torch.sigmoid(self.fc3(x))
+        x = self.fc3(x)
         return x
 
 
@@ -130,7 +130,7 @@ plt.savefig('test.jpg')
 print(' '.join('%d' % labels[j] for j in range(4)))
 
 net = Net()
-criterion = nn.BCELoss()
+criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 for epoch in range(1):
     running_loss = 0.0
@@ -138,7 +138,7 @@ for epoch in range(1):
         inputs, labels = data
         optimizer.zero_grad()
         outputs = net(inputs.float())
-        loss = criterion(outputs, labels.float())
+        loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
 
@@ -156,9 +156,10 @@ with torch.no_grad():
     for data in val_loader:
         inputs, labels = data
         outputs = net(inputs.float())
-        predicted = np.round(outputs)
+        predicted = outputs.argmax(1)
         total += labels.size(0)
-        labels = labels.view(4, 1)
+        print(predicted)
+        print(labels)
         correct += (predicted == labels.float()).sum().item()
 print('Accuracy of the network on the validation set is: %d %%' %
     (100*correct/total))
