@@ -1,5 +1,7 @@
+import collections
 import os
 import re
+from collections import Counter
 from datetime import datetime
 
 import matplotlib.pyplot as plt
@@ -23,7 +25,7 @@ class Net(nn.Module):
         self.conv2 = nn.Conv2d(6, 16, 5)
         self.fc1 = nn.Linear(16 * 61 * 61, 120)
         self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 2)
+        self.fc3 = nn.Linear(84, 5)
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
@@ -39,7 +41,7 @@ class paintingsDataset(Dataset):
     def __init__(self, data_dir, csv_file_path, split, transform=None):
         """
         Args:
-            csv_file_path: Path to the csv file with document names, gender and other info
+            csv_file_path: Path to the csv file with document names, medium and other info
             root_dir: Directory with all paintings
             transform: Optional transform to be applied on a sample
         """
@@ -52,17 +54,22 @@ class paintingsDataset(Dataset):
         pattern = r'(\w+)-(\w+)_(\d+)'
         number_pattern = r'(\d+)'
         list_of_images_folder = os.listdir(self.data_dir)
+        dict_of_classes, min_examples = top5(csv_file_path)
+        counter_classes = dict(zip(list(dict_of_classes.keys()), [0]*len(dict_of_classes)))
         for i, img in enumerate(csv_contents['img_file']):
-            name_and_date = re.match(pattern, img)[0]
-            number = re.findall(number_pattern, img)[1]
-            if f"{name_and_date}-{number}.jpg" in list_of_images_folder:
-                images.append(f"{self.data_dir}/{img}")
-                labels.append(csv_contents['gender'][i])
-            else:
-                if f"{name_and_date}_{number}.jpg" in list_of_images_folder:
-                    images.append(f"{self.data_dir}/{name_and_date}_{number}.jpg")
-                    labels.append(csv_contents['gender'][i])
-        train_size = int(np.floor(len(labels)*0.6))
+            if csv_contents['medium'][i] in dict_of_classes and counter_classes[csv_contents['medium'][i]]<min_examples:
+                name_and_date = re.match(pattern, img)[0]
+                number = re.findall(number_pattern, img)[1]
+                if f"{name_and_date}-{number}.jpg" in list_of_images_folder:
+                    images.append(f"{self.data_dir}/{img}")
+                    labels.append(dict_of_classes[csv_contents['medium'][i]])
+                    counter_classes[csv_contents['medium'][i]] += 1
+                else:
+                    if f"{name_and_date}_{number}.jpg" in list_of_images_folder:
+                        images.append(f"{self.data_dir}/{name_and_date}_{number}.jpg")
+                        labels.append(dict_of_classes[csv_contents['medium'][i]])
+                        counter_classes[csv_contents['medium'][i]] += 1
+        train_size = int(np.floor(len(labels)*0.8))
         val_size = int(np.floor(len(labels)*0.2))
         if split == 'train':
             self.labels = labels[0:train_size]
@@ -89,6 +96,19 @@ class paintingsDataset(Dataset):
         # img = np.array(img)
         return img, label
 
+def top5(csv_file_path):
+    labels = []
+    with open(csv_file_path, "r") as f:
+        csv_contents = pd.read_csv(f)
+    labels = list(csv_contents['medium'])
+    top5_classes = Counter(labels).most_common(5)
+    min_number = int(top5_classes[4][1])
+    top5_classes = sorted(top5_classes)
+    label_dict = {}
+    for i, el in enumerate(top5_classes):
+        label_dict[el[0]] = i
+    return label_dict, min_number
+
 def imshow(img):
     npimg = img.numpy()
     plt.imshow(np.transpose(npimg, (1, 2, 0)))
@@ -109,7 +129,6 @@ def train(Path, transform, device):
 
     imshow(torchvision.utils.make_grid(images))
     plt.savefig('test.jpg')
-    print(' '.join('%d' % labels[j] for j in range(4)))
 
     net = Net()
     net.to(device)
@@ -120,7 +139,7 @@ def train(Path, transform, device):
         for i, data in enumerate(train_loader, 0):
             inputs, labels = data[0].to(device), data[1].to(device)
             optimizer.zero_grad()
-            outputs = net(inputs.float())
+            outputs = net(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -152,18 +171,29 @@ def testval(Path, transform, split, device):
     with torch.no_grad():
         for data in loader:
             inputs, labels = data[0].to(device), data[1].to(device)
-            outputs = net(inputs.float())
-            predicted = outputs.argmax(1)
+            outputs = net(inputs)
             total += labels.size(0)
-            correct += (predicted == labels.float()).sum().item()
+            # correct += (outputs.argmax(1) == labels).sum().item()
+            print('outputs: ')
+            print( outputs)
+            print('labels: ' )
+            print(labels)
+            predicted = outputs.argmax(1)
+            print('predicted:')
+            print(predicted)
+            correct += (predicted == labels).sum().item()
+            print('correct: %d' % correct)
+            print('total: %d ' % total)
+            print('\n')
     print('Accuracy of the network on the validation set is: %d %%' %
           (100*correct/total))
-    print('correct: %d' % correct)
-    print('total: %d ' % total)
+    
 
 
 def main():
     startTime = datetime.now()
+    dict_of_classes, _ = top5("/users/oncescu/data/pictures_project/spa-classify.csv?dl=0")
+    inverted_dict = dict(map(reversed, dict_of_classes.items()))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     transform = transforms.Compose([transforms.Resize(256),
                                     transforms.CenterCrop(256),
