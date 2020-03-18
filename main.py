@@ -1,8 +1,10 @@
+import argparse
 import collections
 import os
 import re
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,6 +17,7 @@ import torchvision
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+from zsvision.zs_beartype import beartype
 
 
 class Net(nn.Module):
@@ -37,7 +40,7 @@ class Net(nn.Module):
         return x
 
 
-class paintingsDataset(Dataset):
+class PaintingsDataset(Dataset):
     def __init__(self, data_dir, csv_file_path, split, transform=None):
         """
         Args:
@@ -57,7 +60,8 @@ class paintingsDataset(Dataset):
         dict_of_classes, min_examples = top5(csv_file_path)
         counter_classes = dict(zip(list(dict_of_classes.keys()), [0]*len(dict_of_classes)))
         for i, img in enumerate(csv_contents['img_file']):
-            if csv_contents['medium'][i] in dict_of_classes and counter_classes[csv_contents['medium'][i]]<min_examples:
+            if (csv_contents['medium'][i] in dict_of_classes and
+                    counter_classes[csv_contents['medium'][i]] < min_examples):
                 name_and_date = re.match(pattern, img)[0]
                 number = re.findall(number_pattern, img)[1]
                 if f"{name_and_date}-{number}.jpg" in list_of_images_folder:
@@ -69,6 +73,7 @@ class paintingsDataset(Dataset):
                         images.append(f"{self.data_dir}/{name_and_date}_{number}.jpg")
                         labels.append(dict_of_classes[csv_contents['medium'][i]])
                         counter_classes[csv_contents['medium'][i]] += 1
+
         train_size = int(np.floor(len(labels)*0.8))
         val_size = int(np.floor(len(labels)*0.2))
         if split == 'train':
@@ -114,8 +119,13 @@ def imshow(img):
     plt.imshow(np.transpose(npimg, (1, 2, 0)))
     plt.show()
 
-def train(Path, transform, device):
-    paintings_train = paintingsDataset(
+@beartype
+def train(
+        ckpt_path: Path,
+        transform: torchvision.transforms.Compose,
+        device: torch.device
+):
+    paintings_train = PaintingsDataset(
         data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
         csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
         split='train', transform=transform)
@@ -149,15 +159,22 @@ def train(Path, transform, device):
                 print('[%d, %5d] loss:%.3f' %
                       (epoch + 1, i + 1, running_loss/100))
                 running_loss = 0.0
-    torch.save(net, Path)
+    torch.save(net, ckpt_path)
     print('Finished Training')
 
-def testval(Path, transform, split, device):
+
+@beartype
+def testval(
+        ckpt_path: Path,
+        transform: torchvision.transforms.Compose,
+        device: torch.device,
+        split: str,
+):
     net = Net()
-    net = torch.load(Path)
+    net = torch.load(ckpt_path)
     net.eval()
     net.to(device)
-    paintings = paintingsDataset(
+    paintings = PaintingsDataset(
         data_dir="/users/oncescu/data/pictures_project/pictures/spa_images",
         csv_file_path="/users/oncescu/data/pictures_project/spa-classify.csv?dl=0",
         split=split, transform=transform)
@@ -174,33 +191,35 @@ def testval(Path, transform, split, device):
             outputs = net(inputs)
             total += labels.size(0)
             # correct += (outputs.argmax(1) == labels).sum().item()
-            print('outputs: ')
-            print( outputs)
-            print('labels: ' )
-            print(labels)
+            print(f"outputs: {outputs}")
+            print(f"labels: {labels}")
             predicted = outputs.argmax(1)
-            print('predicted:')
-            print(predicted)
+            print(f"predicted: {predicted}")
             correct += (predicted == labels).sum().item()
             print('correct: %d' % correct)
             print('total: %d ' % total)
             print('\n')
     print('Accuracy of the network on the validation set is: %d %%' %
           (100*correct/total))
-    
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--csv_path', default="data/spa-classify.csv?dl=0", type=Path)
+    parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
+    args = parser.parse_args()
+
     startTime = datetime.now()
-    dict_of_classes, _ = top5("/users/oncescu/data/pictures_project/spa-classify.csv?dl=0")
-    inverted_dict = dict(map(reversed, dict_of_classes.items()))
+    # inverted_dict = dict(map(reversed, dict_of_classes.items()))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     transform = transforms.Compose([transforms.Resize(256),
                                     transforms.CenterCrop(256),
                                     transforms.ToTensor()])
-    Path = "/users/oncescu/coding/libs/pt/pictures_project/model.pt"
-    train(Path, transform, device)
-    testval(Path, transform, 'val', device)
+
+    # path = "/users/oncescu/coding/libs/pt/pictures_project/model.pt"
+    train(args.ckpt_path, transform, device)
+    testval(args.ckpt_path, transform, 'val', device)
     print(datetime.now() - startTime)
+
 if __name__ == '__main__':
     main()
