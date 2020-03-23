@@ -2,6 +2,7 @@ import argparse
 import glob
 import os
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -15,6 +16,7 @@ import torch.optim as optim
 import torchvision
 from PIL import Image
 from torch.utils.data import Dataset
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from zsvision.zs_beartype import beartype
 from zsvision.zs_utils import BlockTimer
@@ -163,12 +165,12 @@ class PaintingsDataset(Dataset):
         # img = np.array(img)
         return img, label
 
+
 def stratify(labels):
     dict_of_lists = defaultdict(list)
     for i, el in enumerate(labels):
         dict_of_lists[el].append(i)
     return dict_of_lists
-
 
 
 def imshow(img):
@@ -183,6 +185,15 @@ def imshow(img):
     plt.savefig(str(fig_dir / "im.png"))
 
 
+def logdata():
+    # now = datetime.now()
+    # current_time = now.strftime("%H_%M_%S")
+    # current_date = now.date()
+    # log_directory = f"data/logs{current_time}-{current_date}"
+    # os.mkdir(log_directory)
+    return SummaryWriter("data/logs")
+
+
 @beartype
 def train(
         ckpt_path: Path,
@@ -190,6 +201,7 @@ def train(
         train_loader: torch.utils.data.DataLoader,
         device: torch.device,
         epoch: int,
+        learning_rate: float,
 ):
     dataiter = iter(train_loader)
     images, labels = dataiter.next()
@@ -202,8 +214,9 @@ def train(
     #     net.eval()
     net.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+    optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9)
     running_loss = 0.0
+    running_loss_tot = 0.0
     total = 0
     correct = 0
     for i, data in enumerate(train_loader, 0):
@@ -218,6 +231,7 @@ def train(
         optimizer.step()
 
         running_loss += loss.item()
+        running_loss_tot += loss.item()
         if i % 10 == 9:
             print('[%d, %5d] loss:%.3f' %
                   (epoch + 1, i + 1, running_loss/100))
@@ -225,7 +239,7 @@ def train(
     print(f"accuracy on train data after one epoch is:{correct / total}")
     torch.save(net, ckpt_path)
     print('Finished Training')
-    return 100 * correct / total
+    return 100 * correct / total, running_loss_tot / 100
 
 
 @beartype
@@ -242,14 +256,18 @@ def testval(
     net.to(device)
     correct = 0
     total = 0
+    criterion = nn.CrossEntropyLoss()
     files = glob.glob(str(visualise))
     for f in files:
         os.remove(f)
+    val_loss = 0.0
     with torch.no_grad():
         for data in val_loader:
             inputs, labels = data[0].to(device), data[1].to(device)
             outputs = net(inputs)
             total += labels.size(0)
+            loss = criterion(outputs, labels)
+            val_loss += loss.item()
             # correct += (outputs.argmax(1) == labels).sum().item()
             print(f"outputs: {outputs}")
             print(f"labels: {labels}")
@@ -267,6 +285,8 @@ def testval(
             plt.savefig(image_path)
             os.chmod(image_path, 0o777)
     acc = 100 * correct / total
+    val_loss = val_loss / 100
+    return acc, val_loss
     print(f"Accuracy of the network on the validation set is: {acc} %%")
 
 
@@ -280,6 +300,7 @@ def main():
     parser.add_argument('--num_epochs', default=20, type=int)
     parser.add_argument('--keep_k_most_common_labels', default=5, type=int)
     parser.add_argument('--dataset', default="five-class")
+    parser.add_argument('--learning_rate', default=0.001, type=float)
     parser.add_argument('--im_suffix', default=".jpg",
                         help="the suffix for images in the dataset")
     parser.add_argument('--visualise', default="data/visualise/*", type=Path)
@@ -294,6 +315,7 @@ def main():
         raise NotImplementedError(f"Means and std are not computed for {args.dataset}")
 
     transform_train = transforms.Compose([transforms.RandomAffine(degrees=90),
+                                          transforms.RandomHorizontalFlip(),
                                           transforms.Resize(256),
                                           transforms.CenterCrop(256),
                                           transforms.ToTensor(),
@@ -337,27 +359,38 @@ def main():
         drop_last=False,
         **loader_kwargs,
     )
-    accuracytrain = []
     net = Net()
+    writer = logdata()
     for epoch in range(args.num_epochs):
         with BlockTimer(f"[{epoch}/{args.num_epochs} training and eval"):
-            acc = train(
+            train_acc, train_loss = train(
                 net=net,
                 epoch=epoch,
                 device=device,
                 ckpt_path=args.ckpt_path,
                 train_loader=train_loader,
+                learning_rate=args.learning_rate,
             )
-            accuracytrain.append(acc)
-            testval(
+            val_acc, val_loss = testval(
                 net=net,
                 ckpt_path=args.ckpt_path,
                 val_loader=val_loader,
                 device=device,
                 visualise=args.visualise,
             )
-    print(accuracytrain)
+
+            writer.add_scalar("train_loss", train_loss, global_step=epoch)
+            writer.add_scalar("val_loss", val_loss, global_step=epoch)
+            writer.add_scalar("train_acc", train_acc, global_step=epoch)
+            writer.add_scalar("val_acc", val_acc, global_step=epoch)
+
+            # writer.add_scalars(f"Summary/Train and validation loss lr={args.learning_rate} bs={args.batch_size}",
+            #                    {'train' : train_loss, 'val' : val_loss}, epoch)
+            # writer.add_scalars(f"Summary/Train and validation accuracy lr={args.learning_rate} bs={args.batch_size}",
+            #                    {'train' : train_acc, 'val' : val_acc}, epoch)
+    writer.close()
     print(paintings_train.label2idx)
+
 
 if __name__ == '__main__':
     main()
