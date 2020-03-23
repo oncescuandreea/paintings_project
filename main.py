@@ -1,10 +1,9 @@
 import argparse
-import itertools
+import glob
 import os
-import re
-import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Dict, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,10 +14,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torchvision
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 from torchvision import transforms
 from zsvision.zs_beartype import beartype
-from typing import Dict, Tuple, List
 from zsvision.zs_utils import BlockTimer
 
 
@@ -58,37 +56,12 @@ class PaintingsDataset(Dataset):
         self.csv_contents = csv_contents
         self.data_dir = data_dir
         self.csv_contents = self.sanitise_csv_contents(self.csv_contents)
-
-        images = []
-        labels = []
-
-        list_of_images = list(data_dir.glob(f"*{im_suffix}"))
-        print(f"Found {len(list_of_images)} in {data_dir}")
-        # list_of_images_folder = os.listdir(self.data_dir)
-        label2idx, min_examples_per_label = self.filter_to_k_most_common_labels(
-            k=keep_k_most_common_labels)
-
-        # dict_of_classes, min_examples = top5(csv_file_path)
-
-        train_size = int(np.floor(min_examples_per_label*0.8))
-        val_size = int(np.floor(min_examples_per_label*0.2))
-        dict_of_labels = stratify(labels)
-        if split == 'train':
-            self.labels = list(itertools.chain(*([list(map(labels.__getitem__,
-                                                           dict_of_labels[i][0:train_size]))
-                                                  for i in range(5)]*7)))
-            self.images = list(itertools.chain(*([list(map(images.__getitem__,
-                                                           dict_of_labels[i][0:train_size]))
-                                                  for i in range(5)]*7)))
-        elif split == 'val':
-            self.labels = list(itertools.chain(*[list(
-                map(labels.__getitem__, dict_of_labels[i][train_size:train_size+val_size]))
-                                                 for i in range(5)]))
-            self.images = list(itertools.chain(*[list(map(images.__getitem__, dict_of_labels[i][train_size:train_size+val_size])) for i in range(5)]))
-        else:
-            self.labels = list(itertools.chain(*[list(map(labels.__getitem__, dict_of_labels[i][train_size+val_size:])) for i in range(5)]))
-            self.images = list(itertools.chain(*[list(map(images.__getitem__, dict_of_labels[i][train_size+val_size:])) for i in range(5)]))
-
+        im_info = self.filter_to_k_most_common_labels(k=keep_k_most_common_labels)
+        self.label2idx = im_info["label_dict"]
+        keep = np.where(np.array(im_info["splits"]) == split)[0]
+        self.labels = np.array(im_info["labels"])[keep]
+        self.images = [data_dir / im_name for im_name
+                       in np.array(im_info["images"])[keep]]
         self.transform = transform
 
     @beartype
@@ -138,7 +111,7 @@ class PaintingsDataset(Dataset):
         return csv_contents
 
     @beartype
-    def filter_to_k_most_common_labels(self, k: int) -> Tuple[Dict, int]:
+    def filter_to_k_most_common_labels(self, k: int) -> Dict:
         labels = list(self.csv_contents['medium'])
         topk_classes = Counter(labels).most_common(k)
         min_number = int(topk_classes[k - 1][1])
@@ -146,7 +119,36 @@ class PaintingsDataset(Dataset):
         label_dict = {}
         for i, el in enumerate(topk_classes):
             label_dict[el[0]] = i
-        return label_dict, min_number
+        images = []
+        labels = []
+        for i, el in enumerate(self.csv_contents['img_file']):
+            if self.csv_contents.iloc[i]['medium'] in dict(topk_classes).keys():
+                images.append(el)
+                labels.append(label_dict[self.csv_contents.iloc[i]['medium']])
+        labels = np.array(labels)
+        images = np.array(images)
+        balanced_labels, balanced_ims = [], []
+        num_train = int(min_number * 0.8)
+        splits = []
+        for subset in ("train", "val"):
+            for class_idx in label_dict.values():
+                keep = np.where(labels == class_idx)[0][:min_number]
+                if subset == "train":
+                    keep = keep[:num_train]
+                elif subset == "val":
+                    keep = keep[num_train:]
+                else:
+                    raise ValueError(f"Unknown subset: {subset}")
+                balanced_ims.extend(images[keep])
+                balanced_labels.extend(labels[keep])
+                splits.extend([subset] * keep.size)
+        im_info = {
+            "label_dict": label_dict,
+            "images": balanced_ims,
+            "labels": balanced_labels,
+            "splits": splits,
+        }
+        return im_info
 
     def __len__(self):
         return len(self.labels)
@@ -184,6 +186,7 @@ def imshow(img):
 @beartype
 def train(
         ckpt_path: Path,
+        net: torch.nn.Module,
         train_loader: torch.utils.data.DataLoader,
         device: torch.device,
         epoch: int,
@@ -193,11 +196,10 @@ def train(
 
     imshow(torchvision.utils.make_grid(images))
     plt.savefig('test.jpg')
-
-    net = Net()
-    if epoch != 0:
-        net = torch.load(ckpt_path)
-        net.eval()
+    net.train()
+    # if epoch != 0:
+    #     net = torch.load(ckpt_path)
+    #     net.eval()
     net.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
@@ -229,18 +231,20 @@ def train(
 @beartype
 def testval(
         ckpt_path: Path,
+        net: torch.nn.Module,
         val_loader: torch.utils.data.DataLoader,
         device: torch.device,
         visualise: Path
 ):
-    net = Net()
-    net = torch.load(ckpt_path)
+    # net = Net()
+    # net = torch.load(ckpt_path)
     net.eval()
     net.to(device)
     correct = 0
     total = 0
-    # bash_command = f"rm {visualise}"
-    # subprocess.call(bash_command.split())
+    files = glob.glob(str(visualise))
+    for f in files:
+        os.remove(f)
     with torch.no_grad():
         for data in val_loader:
             inputs, labels = data[0].to(device), data[1].to(device)
@@ -259,7 +263,9 @@ def testval(
             labels = labels.cpu()
             predicted = predicted.cpu()
             imshow(torchvision.utils.make_grid(inputs))
-            plt.savefig(f"data/visualise/{total/4}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg")
+            image_path = f"data/visualise/{total/4}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
+            plt.savefig(image_path)
+            os.chmod(image_path, 0o777)
     acc = 100 * correct / total
     print(f"Accuracy of the network on the validation set is: {acc} %%")
 
@@ -271,7 +277,7 @@ def main():
     parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--batch_size', default=4, type=int)
-    parser.add_argument('--num_epochs', default=10, type=int)
+    parser.add_argument('--num_epochs', default=20, type=int)
     parser.add_argument('--keep_k_most_common_labels', default=5, type=int)
     parser.add_argument('--dataset', default="five-class")
     parser.add_argument('--im_suffix', default=".jpg",
@@ -288,7 +294,6 @@ def main():
         raise NotImplementedError(f"Means and std are not computed for {args.dataset}")
 
     transform_train = transforms.Compose([transforms.RandomAffine(degrees=90),
-                                          transforms.ColorJitter(contrast=0.2),
                                           transforms.Resize(256),
                                           transforms.CenterCrop(256),
                                           transforms.ToTensor(),
@@ -333,20 +338,26 @@ def main():
         **loader_kwargs,
     )
     accuracytrain = []
-    label_dict, _ = top5(args.csv_path)
+    net = Net()
     for epoch in range(args.num_epochs):
         with BlockTimer(f"[{epoch}/{args.num_epochs} training and eval"):
             acc = train(
+                net=net,
                 epoch=epoch,
                 device=device,
                 ckpt_path=args.ckpt_path,
                 train_loader=train_loader,
             )
             accuracytrain.append(acc)
-            testval(ckpt_path=args.ckpt_path, val_loader=val_loader, device=device,
-                    visualise=args.visualise)
+            testval(
+                net=net,
+                ckpt_path=args.ckpt_path,
+                val_loader=val_loader,
+                device=device,
+                visualise=args.visualise,
+            )
     print(accuracytrain)
-    print(label_dict)
+    print(paintings_train.label2idx)
 
 if __name__ == '__main__':
     main()
