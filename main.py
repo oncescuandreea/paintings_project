@@ -1,7 +1,7 @@
 import argparse
 import glob
-import time
 import os
+import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +19,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
+from torchvision.models import resnet18
 from zsvision.zs_beartype import beartype
 from zsvision.zs_utils import BlockTimer
 
@@ -189,9 +190,13 @@ def imshow(img):
 
 
 @beartype
-def build_summary_writer(learning_rate: float, batch_size: int) -> SummaryWriter:
+def build_summary_writer(
+        learning_rate: float,
+        batch_size: int,
+        model: str,
+) -> SummaryWriter:
     timestamp = datetime.now().strftime("%d-%b-%Y_%H-%M-%S")
-    log_dir = Path("data/logs") / f"lr-{learning_rate}-bs-{batch_size}" / timestamp
+    log_dir = Path("data/logs") / f"model-{model}-lr-{learning_rate}-bs-{batch_size}" / timestamp
     log_dir.mkdir(exist_ok=True, parents=True)
     return SummaryWriter(str(log_dir))
 
@@ -212,16 +217,10 @@ def train(
     imshow(torchvision.utils.make_grid(images))
     plt.savefig('test.jpg')
     net.train()
-    # if epoch != 0:
-    #     net = torch.load(ckpt_path)
-    #     net.eval()
+
     net.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9)
-    running_loss = 0.0
-    running_loss_tot = 0.0
-    total = 0
-    correct = 0
 
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -244,10 +243,6 @@ def train(
         optimizer.zero_grad()
         outputs = net(inputs)
 
-        # predicted = outputs.argmax(1)
-        # correct += (predicted == labels).sum().item()
-        # total += labels.size(0)
-
         acc1 = accuracy(output=outputs, target=labels, topk=(1,))
 
         loss = criterion(outputs, labels)
@@ -261,21 +256,13 @@ def train(
         batch_time.update(time.time() - end)
         end = time.time()
 
-        running_loss += loss.item()
-        running_loss_tot += loss.item()
         if i % frequency == 0:
             progress.display(i)
 
-        # if i % 10 == 9:
-        #     print('[%d, %5d] loss:%.3f' %
-        #           (epoch + 1, i + 1, running_loss/100))
-        #     running_loss = 0.0
-    # print(f"accuracy on train data after one epoch is:{correct / total}")
     print(f" * Acc@1 {top1.avg:.3f}")
     torch.save(net, ckpt_path)
     print('Finished Training')
 
-    # return 100 * correct / total, running_loss_tot / 100
     return top1.avg, losses.avg
 
 
@@ -285,46 +272,69 @@ def testval(
         net: torch.nn.Module,
         val_loader: torch.utils.data.DataLoader,
         device: torch.device,
+        epoch: int,
         visualise: Path,
+        frequency: int,
 ):
     # net = Net()
     # net = torch.load(ckpt_path)
     net.eval()
     net.to(device)
-    correct = 0
-    total = 0
+
+    dataiter = iter(val_loader)
+    images, labels = dataiter.next()
+
     criterion = nn.CrossEntropyLoss()
+
+    batch_time = AverageMeter('Time', ':6.3f')
+    data_time = AverageMeter('Data', ':6.3f')
+    losses = AverageMeter('Loss', ':.2e')
+    top1 = AverageMeter('Acc@1', ':6.2f')
+    progress = ProgressMeter(
+        len(val_loader),
+        [batch_time, data_time, losses, top1],
+        prefix="Epoch: [{}]".format(epoch),
+    )
+
+    end = time.time()
+
     files = glob.glob(str(visualise))
     for f in files:
         os.remove(f)
-    val_loss = 0.0
     with torch.no_grad():
-        for data in val_loader:
+        for i, data in enumerate(val_loader, 0):
             inputs, labels = data[0].to(device), data[1].to(device)
+
+            # measure data loading time
+            data_time.update(time.time() - end)
+
             outputs = net(inputs)
-            total += labels.size(0)
-            loss = criterion(outputs, labels)
-            val_loss += loss.item()
-            # correct += (outputs.argmax(1) == labels).sum().item()
-            # print(f"outputs: {outputs}")
-            # print(f"labels: {labels}")
             predicted = outputs.argmax(1)
-            # print(f"predicted: {predicted}")
-            correct += (predicted == labels).sum().item()
-            print('correct: %d' % correct)
-            print('total: %d ' % total)
-            print('\n')
+
+            acc1 = accuracy(output=outputs, target=labels, topk=(1,))
+
+            loss = criterion(outputs, labels)
+
+            losses.update(loss.item(), inputs.size(0))
+            top1.update(acc1[0].item(), images.size(0))
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if i % frequency == 0:
+                progress.display(i)
+
             inputs = inputs.cpu()
             labels = labels.cpu()
             predicted = predicted.cpu()
             imshow(torchvision.utils.make_grid(inputs))
-            image_path = f"data/visualise/{total/4}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
+            image_path = f"data/visualise/{i}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
             plt.savefig(image_path)
             os.chmod(image_path, 0o777)
-    acc = 100 * correct / total
-    val_loss = val_loss / 100
-    return acc, val_loss
-    print(f"Accuracy of the network on the validation set is: {acc} %%")
+
+    print(f" * Acc@1 {top1.avg:.3f}")
+    return top1.avg, losses.avg
 
 
 def main():
@@ -333,8 +343,8 @@ def main():
     parser.add_argument('--im_dir', default="data/pictures/spa_images", type=Path)
     parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
     parser.add_argument('--num_workers', default=4, type=int)
-    parser.add_argument('--batch_size', default=4, type=int)
-    parser.add_argument('--num_epochs', default=30, type=int)
+    parser.add_argument('--batch_size', default=16, type=int)
+    parser.add_argument('--num_epochs', default=10, type=int)
     parser.add_argument('--keep_k_most_common_labels', default=5, type=int)
     parser.add_argument('--dataset', default="five-class")
     parser.add_argument('--learning_rate', default=0.001, type=float)
@@ -397,10 +407,14 @@ def main():
         drop_last=False,
         **loader_kwargs,
     )
-    net = Net()
+    # net = Net()
+    net = resnet18(pretrained=True)
+
+    net._modules['fc'] = nn.Linear(512, 5, bias=True)
     writer = build_summary_writer(
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
+        model='resnet18',
     )
     for epoch in range(args.num_epochs):
         with BlockTimer(f"[{epoch}/{args.num_epochs} training and eval"):
@@ -418,7 +432,9 @@ def main():
                 ckpt_path=args.ckpt_path,
                 val_loader=val_loader,
                 device=device,
+                epoch=epoch,
                 visualise=args.visualise,
+                frequency=args.print_freq,
             )
 
             writer.add_scalar("train_loss", train_loss, global_step=epoch)
