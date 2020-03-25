@@ -1,5 +1,6 @@
 import argparse
 import glob
+import time
 import os
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -20,6 +21,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from zsvision.zs_beartype import beartype
 from zsvision.zs_utils import BlockTimer
+
+from metrics import AverageMeter, ProgressMeter, accuracy
 
 
 class Net(nn.Module):
@@ -185,13 +188,12 @@ def imshow(img):
     plt.savefig(str(fig_dir / "im.png"))
 
 
-def logdata():
-    # now = datetime.now()
-    # current_time = now.strftime("%H_%M_%S")
-    # current_date = now.date()
-    # log_directory = f"data/logs{current_time}-{current_date}"
-    # os.mkdir(log_directory)
-    return SummaryWriter("data/logs")
+@beartype
+def build_summary_writer(learning_rate: float, batch_size: int) -> SummaryWriter:
+    timestamp = datetime.now().strftime("%d-%b-%Y_%H-%M-%S")
+    log_dir = Path("data/logs") / f"lr-{learning_rate}-bs-{batch_size}" / timestamp
+    log_dir.mkdir(exist_ok=True, parents=True)
+    return SummaryWriter(str(log_dir))
 
 
 @beartype
@@ -202,6 +204,7 @@ def train(
         device: torch.device,
         epoch: int,
         learning_rate: float,
+        frequency: int,
 ):
     dataiter = iter(train_loader)
     images, labels = dataiter.next()
@@ -219,27 +222,61 @@ def train(
     running_loss_tot = 0.0
     total = 0
     correct = 0
+
+    batch_time = AverageMeter('Time', ':6.3f')
+    data_time = AverageMeter('Data', ':6.3f')
+    losses = AverageMeter('Loss', ':.2e')
+    top1 = AverageMeter('Acc@1', ':6.2f')
+    progress = ProgressMeter(
+        len(train_loader),
+        [batch_time, data_time, losses, top1],
+        prefix="Epoch: [{}]".format(epoch),
+    )
+
+    end = time.time()
     for i, data in enumerate(train_loader, 0):
+
         inputs, labels = data[0].to(device), data[1].to(device)
+
+        # measure data loading time
+        data_time.update(time.time() - end)
+
         optimizer.zero_grad()
         outputs = net(inputs)
-        predicted = outputs.argmax(1)
-        correct += (predicted == labels).sum().item()
-        total += labels.size(0)
+
+        # predicted = outputs.argmax(1)
+        # correct += (predicted == labels).sum().item()
+        # total += labels.size(0)
+
+        acc1 = accuracy(output=outputs, target=labels, topk=(1,))
+
         loss = criterion(outputs, labels)
+        losses.update(loss.item(), inputs.size(0))
+        top1.update(acc1[0].item(), images.size(0))
+
         loss.backward()
         optimizer.step()
 
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
         running_loss += loss.item()
         running_loss_tot += loss.item()
-        if i % 10 == 9:
-            print('[%d, %5d] loss:%.3f' %
-                  (epoch + 1, i + 1, running_loss/100))
-            running_loss = 0.0
-    print(f"accuracy on train data after one epoch is:{correct / total}")
+        if i % frequency == 0:
+            progress.display(i)
+
+        # if i % 10 == 9:
+        #     print('[%d, %5d] loss:%.3f' %
+        #           (epoch + 1, i + 1, running_loss/100))
+        #     running_loss = 0.0
+    # print(f"accuracy on train data after one epoch is:{correct / total}")
+    print(f" * Acc@1 {top1.avg:.3f}")
     torch.save(net, ckpt_path)
     print('Finished Training')
-    return 100 * correct / total, running_loss_tot / 100
+
+    # return 100 * correct / total, running_loss_tot / 100
+    return top1.avg, losses.avg
 
 
 @beartype
@@ -248,7 +285,7 @@ def testval(
         net: torch.nn.Module,
         val_loader: torch.utils.data.DataLoader,
         device: torch.device,
-        visualise: Path
+        visualise: Path,
 ):
     # net = Net()
     # net = torch.load(ckpt_path)
@@ -269,10 +306,10 @@ def testval(
             loss = criterion(outputs, labels)
             val_loss += loss.item()
             # correct += (outputs.argmax(1) == labels).sum().item()
-            print(f"outputs: {outputs}")
-            print(f"labels: {labels}")
+            # print(f"outputs: {outputs}")
+            # print(f"labels: {labels}")
             predicted = outputs.argmax(1)
-            print(f"predicted: {predicted}")
+            # print(f"predicted: {predicted}")
             correct += (predicted == labels).sum().item()
             print('correct: %d' % correct)
             print('total: %d ' % total)
@@ -297,10 +334,11 @@ def main():
     parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--batch_size', default=4, type=int)
-    parser.add_argument('--num_epochs', default=20, type=int)
+    parser.add_argument('--num_epochs', default=30, type=int)
     parser.add_argument('--keep_k_most_common_labels', default=5, type=int)
     parser.add_argument('--dataset', default="five-class")
     parser.add_argument('--learning_rate', default=0.001, type=float)
+    parser.add_argument('--print_freq', default=10, type=int)
     parser.add_argument('--im_suffix', default=".jpg",
                         help="the suffix for images in the dataset")
     parser.add_argument('--visualise', default="data/visualise/*", type=Path)
@@ -360,7 +398,10 @@ def main():
         **loader_kwargs,
     )
     net = Net()
-    writer = logdata()
+    writer = build_summary_writer(
+        learning_rate=args.learning_rate,
+        batch_size=args.batch_size,
+    )
     for epoch in range(args.num_epochs):
         with BlockTimer(f"[{epoch}/{args.num_epochs} training and eval"):
             train_acc, train_loss = train(
@@ -370,6 +411,7 @@ def main():
                 ckpt_path=args.ckpt_path,
                 train_loader=train_loader,
                 learning_rate=args.learning_rate,
+                frequency=args.print_freq,
             )
             val_acc, val_loss = testval(
                 net=net,
@@ -384,10 +426,6 @@ def main():
             writer.add_scalar("train_acc", train_acc, global_step=epoch)
             writer.add_scalar("val_acc", val_acc, global_step=epoch)
 
-            # writer.add_scalars(f"Summary/Train and validation loss lr={args.learning_rate} bs={args.batch_size}",
-            #                    {'train' : train_loss, 'val' : val_loss}, epoch)
-            # writer.add_scalars(f"Summary/Train and validation accuracy lr={args.learning_rate} bs={args.batch_size}",
-            #                    {'train' : train_acc, 'val' : val_acc}, epoch)
     writer.close()
     print(paintings_train.label2idx)
 
