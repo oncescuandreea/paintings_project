@@ -55,6 +55,7 @@ class PaintingsDataset(Dataset):
             split: str,
             im_suffix: str,
             keep_k_most_common_labels: int,
+            # writer: torch.utils.tensorboard.writer.SummaryWriter,
             transform: transforms.Compose = None,
     ):
         with open(csv_file_path, "r") as f:
@@ -65,9 +66,22 @@ class PaintingsDataset(Dataset):
         im_info = self.filter_to_k_most_common_labels(k=keep_k_most_common_labels)
         self.label2idx = im_info["label_dict"]
         keep = np.where(np.array(im_info["splits"]) == split)[0]
+        keep = np.array([0] * len(keep))
         self.labels = np.array(im_info["labels"])[keep]
         self.images = [data_dir / im_name for im_name
                        in np.array(im_info["images"])[keep]]
+        # all_images = [data_dir / im_name for im_name
+        #                in np.array(im_info["images"])]
+        # tensor_transform = transforms.ToTensor()
+        # idx2label = dict(map(reversed, self.label2idx.items()))
+        # for k in range(0, len(all_images) - 20, 3):
+        #     img = tensor_transform(Image.open(all_images[k]))
+        #     label = np.array(im_info["labels"])[k]
+        #     writer.add_image(f"train2-{k}-{label}-{idx2label[label]}", img)
+        # for k in range(126, len(all_images)):
+        #     img = tensor_transform(Image.open(all_images[k]))
+        #     label = np.array(im_info["labels"])[k]
+        #     writer.add_image(f"val2-{k}-{label}-{idx2label[label]}", img)
         self.transform = transform
 
     @beartype
@@ -160,14 +174,16 @@ class PaintingsDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        # if torch.is_tensor(idx):
-        #     idx = idx.tolist()
         label = self.labels[idx]
         img = Image.open(self.images[idx])
+        transform_no_change = transforms.Compose([transforms.Resize(224),
+                                                  transforms.CenterCrop(224),
+                                                  transforms.ToTensor()])
         if self.transform is not None:
+            img_org = transform_no_change(img)
             img = self.transform(img)
-        # img = np.array(img)
-        return img, label
+
+        return img_org, img, label
 
 
 def stratify(labels):
@@ -210,9 +226,11 @@ def train(
         epoch: int,
         learning_rate: float,
         frequency: int,
+        writer: torch.utils.tensorboard.writer.SummaryWriter,
+        idx2label: dict,
 ):
     dataiter = iter(train_loader)
-    images, labels = dataiter.next()
+    _, images, labels = dataiter.next()
 
     imshow(torchvision.utils.make_grid(images))
     plt.savefig('test.jpg')
@@ -234,9 +252,7 @@ def train(
 
     end = time.time()
     for i, data in enumerate(train_loader, 0):
-
-        inputs, labels = data[0].to(device), data[1].to(device)
-
+        inputs_org, inputs, labels = data[0].to(device), data[1].to(device), data[2].to(device)
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -255,9 +271,19 @@ def train(
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-
+        labels_str = ('|').join(list(map(idx2label.get, labels.tolist())))
         if i % frequency == 0:
             progress.display(i)
+        if i == 0:
+            writer.add_image(f"Image_train/%d_input_no_transform.{labels_str}" % i,
+                             torchvision.utils.make_grid(inputs_org[0:8, :, :]),
+                             epoch)
+            writer.add_image(f"Image_train/%d_input_transform.{labels_str}" % i,
+                             torchvision.utils.make_grid(inputs[0:8, :, :]),
+                             epoch)
+            # for j, im in enumerate(inputs):
+            #     label = labels[j].item()
+            #     writer.add_image(f"{label}-{idx2label[label]}-{epoch}-{i}-{j}", im)
 
     print(f" * Acc@1 {top1.avg:.3f}")
     torch.save(net, ckpt_path)
@@ -275,6 +301,8 @@ def testval(
         epoch: int,
         visualise: Path,
         frequency: int,
+        writer: torch.utils.tensorboard.writer.SummaryWriter,
+        idx2label: dict,
 ):
     # net = Net()
     # net = torch.load(ckpt_path)
@@ -282,7 +310,7 @@ def testval(
     net.to(device)
 
     dataiter = iter(val_loader)
-    images, labels = dataiter.next()
+    _, images, labels = dataiter.next()
 
     criterion = nn.CrossEntropyLoss()
 
@@ -303,7 +331,7 @@ def testval(
         os.remove(f)
     with torch.no_grad():
         for i, data in enumerate(val_loader, 0):
-            inputs, labels = data[0].to(device), data[1].to(device)
+            inputs_org, inputs, labels = data[0].to(device), data[1].to(device), data[2].to(device)
 
             # measure data loading time
             data_time.update(time.time() - end)
@@ -321,9 +349,16 @@ def testval(
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
-
+            labels_str = ('|').join(list(map(idx2label.get, labels.tolist())))
             if i % frequency == 0:
                 progress.display(i)
+            if i == 0:
+                writer.add_image(f"Image_val/%d_input_no_transform.{labels_str}" % i,
+                                torchvision.utils.make_grid(inputs_org[0:8, :, :]),
+                                epoch)
+                writer.add_image(f"Image_val/%d_input_transform.{labels_str}" % i,
+                                torchvision.utils.make_grid(inputs[0:8, :, :]),
+                             epoch)
 
             inputs = inputs.cpu()
             labels = labels.cpu()
@@ -343,11 +378,11 @@ def main():
     parser.add_argument('--im_dir', default="data/pictures/spa_images", type=Path)
     parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
     parser.add_argument('--num_workers', default=4, type=int)
-    parser.add_argument('--batch_size', default=16, type=int)
+    parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--num_epochs', default=10, type=int)
     parser.add_argument('--keep_k_most_common_labels', default=5, type=int)
     parser.add_argument('--dataset', default="five-class")
-    parser.add_argument('--learning_rate', default=0.001, type=float)
+    parser.add_argument('--learning_rate', default=0.005, type=float)
     parser.add_argument('--print_freq', default=10, type=int)
     parser.add_argument('--im_suffix', default=".jpg",
                         help="the suffix for images in the dataset")
@@ -361,18 +396,21 @@ def main():
         std = (0.2707, 0.2595, 0.2776)
     else:
         raise NotImplementedError(f"Means and std are not computed for {args.dataset}")
-
     transform_train = transforms.Compose([transforms.RandomAffine(degrees=90),
                                           transforms.RandomHorizontalFlip(),
-                                          transforms.Resize(256),
-                                          transforms.CenterCrop(256),
+                                          transforms.CenterCrop(224),
+                                          transforms.Resize(224),
                                           transforms.ToTensor(),
                                           transforms.Normalize(mean, std)])
-    transform_val = transforms.Compose([transforms.Resize(256),
-                                        transforms.CenterCrop(256),
+    transform_val = transforms.Compose([transforms.CenterCrop(224),
+                                        transforms.Resize(224),
                                         transforms.ToTensor(),
                                         transforms.Normalize(mean, std)])
-
+    writer = build_summary_writer(
+        learning_rate=args.learning_rate,
+        batch_size=args.batch_size,
+        model='resnet18',
+    )
     dataset_kwargs = {
         "data_dir": args.im_dir,
         "csv_file_path": args.csv_path,
@@ -387,6 +425,7 @@ def main():
         split='train',
         transform=transform_train,
         **dataset_kwargs,
+        # writer=writer,
     )
     # imag, _ = paintings_train[0]
     # print(imag.size())
@@ -400,6 +439,7 @@ def main():
         split="val",
         transform=transform_val,
         **dataset_kwargs,
+        # writer=writer,
     )
     val_loader = torch.utils.data.DataLoader(
         dataset=paintings_val,
@@ -411,11 +451,6 @@ def main():
     net = resnet18(pretrained=True)
 
     net._modules['fc'] = nn.Linear(512, 5, bias=True)
-    writer = build_summary_writer(
-        learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        model='resnet18',
-    )
     for epoch in range(args.num_epochs):
         with BlockTimer(f"[{epoch}/{args.num_epochs} training and eval"):
             train_acc, train_loss = train(
@@ -426,6 +461,8 @@ def main():
                 train_loader=train_loader,
                 learning_rate=args.learning_rate,
                 frequency=args.print_freq,
+                writer=writer,
+                idx2label=dict(map(reversed, paintings_train.label2idx.items())),
             )
             val_acc, val_loss = testval(
                 net=net,
@@ -435,6 +472,8 @@ def main():
                 epoch=epoch,
                 visualise=args.visualise,
                 frequency=args.print_freq,
+                writer=writer,
+                idx2label=dict(map(reversed, paintings_train.label2idx.items())),
             )
 
             writer.add_scalar("train_loss", train_loss, global_step=epoch)
