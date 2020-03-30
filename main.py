@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torchvision
-from PIL import Image
+from PIL import Image, ImageDraw
 from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -66,22 +66,10 @@ class PaintingsDataset(Dataset):
         im_info = self.filter_to_k_most_common_labels(k=keep_k_most_common_labels)
         self.label2idx = im_info["label_dict"]
         keep = np.where(np.array(im_info["splits"]) == split)[0]
-        keep = np.array([0] * len(keep))
+        # keep = np.array([0] * len(keep))
         self.labels = np.array(im_info["labels"])[keep]
         self.images = [data_dir / im_name for im_name
                        in np.array(im_info["images"])[keep]]
-        # all_images = [data_dir / im_name for im_name
-        #                in np.array(im_info["images"])]
-        # tensor_transform = transforms.ToTensor()
-        # idx2label = dict(map(reversed, self.label2idx.items()))
-        # for k in range(0, len(all_images) - 20, 3):
-        #     img = tensor_transform(Image.open(all_images[k]))
-        #     label = np.array(im_info["labels"])[k]
-        #     writer.add_image(f"train2-{k}-{label}-{idx2label[label]}", img)
-        # for k in range(126, len(all_images)):
-        #     img = tensor_transform(Image.open(all_images[k]))
-        #     label = np.array(im_info["labels"])[k]
-        #     writer.add_image(f"val2-{k}-{label}-{idx2label[label]}", img)
         self.transform = transform
 
     @beartype
@@ -176,8 +164,8 @@ class PaintingsDataset(Dataset):
     def __getitem__(self, idx):
         label = self.labels[idx]
         img = Image.open(self.images[idx])
-        transform_no_change = transforms.Compose([transforms.Resize(224),
-                                                  transforms.CenterCrop(224),
+        transform_no_change = transforms.Compose([transforms.CenterCrop(320),
+                                                  transforms.Resize(224),
                                                   transforms.ToTensor()])
         if self.transform is not None:
             img_org = transform_no_change(img)
@@ -192,6 +180,34 @@ def stratify(labels):
         dict_of_lists[el].append(i)
     return dict_of_lists
 
+@beartype
+def add_margin(
+        img_list: torch.Tensor,
+        labels: torch.Tensor,
+        predictions: torch.Tensor,
+        margins: int,
+        idx2label: dict,
+):
+    new_images = []
+    for k, img in enumerate(img_list):
+        if labels[k] == predictions[k]:
+            color = "green"
+        else:
+            color = "red"
+        transformToPil = transforms.Compose([transforms.ToPILImage()])
+        transformToTensor = transforms.Compose([transforms.ToTensor()])
+        pil_img = transformToPil(img)
+        width, height = pil_img.size
+        bottom = top = right = left = margins
+        new_width = width + right + left
+        new_height = height + top + bottom
+        result = Image.new(pil_img.mode, (new_width, new_height), color)
+        result.paste(pil_img, (left, top))
+        d = ImageDraw.Draw(result)
+        d.text((10, 10), idx2label[labels[k].item()], fill="black")
+        result = transformToTensor(result)
+        new_images.append(result)
+    return new_images
 
 def imshow(img):
     npimg = img.numpy()
@@ -258,6 +274,7 @@ def train(
 
         optimizer.zero_grad()
         outputs = net(inputs)
+        predicted = outputs.argmax(1)
 
         acc1 = accuracy(output=outputs, target=labels, topk=(1,))
 
@@ -271,19 +288,32 @@ def train(
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        labels_str = ('|').join(list(map(idx2label.get, labels.tolist())))
+        # labels_str = ('|').join(list(map(idx2label.get, labels.tolist())))
+        inputs_org = inputs_org.cpu()
+        inputs = inputs.cpu()
+        labels = labels.cpu()
+        predicted = predicted.cpu()
         if i % frequency == 0:
             progress.display(i)
         if i == 0:
-            writer.add_image(f"Image_train/%d_input_no_transform.{labels_str}" % i,
-                             torchvision.utils.make_grid(inputs_org[0:8, :, :]),
+            new_org = add_margin(img_list=inputs_org[0:8, :, :],
+                                 labels=labels,
+                                 predictions=predicted,
+                                 margins=5,
+                                 idx2label=idx2label,
+                                )
+            new_trans = add_margin(img_list=inputs[0:8, :, :],
+                                   labels=labels,
+                                   predictions=predicted,
+                                   margins=5,
+                                   idx2label=idx2label,
+                                  )
+            writer.add_image(f"Image_train_marg/%d_input_no_transform" % i,
+                             torchvision.utils.make_grid(new_org),
                              epoch)
-            writer.add_image(f"Image_train/%d_input_transform.{labels_str}" % i,
-                             torchvision.utils.make_grid(inputs[0:8, :, :]),
+            writer.add_image(f"Image_train/%d_input_transform" % i,
+                             torchvision.utils.make_grid(new_trans),
                              epoch)
-            # for j, im in enumerate(inputs):
-            #     label = labels[j].item()
-            #     writer.add_image(f"{label}-{idx2label[label]}-{epoch}-{i}-{j}", im)
 
     print(f" * Acc@1 {top1.avg:.3f}")
     torch.save(net, ckpt_path)
@@ -349,20 +379,35 @@ def testval(
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+
+            inputs_org = inputs_org.cpu()
+            inputs = inputs.cpu()
+            labels = labels.cpu()
+            predicted = predicted.cpu()
+
             labels_str = ('|').join(list(map(idx2label.get, labels.tolist())))
             if i % frequency == 0:
                 progress.display(i)
             if i == 0:
-                writer.add_image(f"Image_val/%d_input_no_transform.{labels_str}" % i,
-                                torchvision.utils.make_grid(inputs_org[0:8, :, :]),
+                new_org = add_margin(img_list=inputs_org[0:8, :, :],
+                                     labels=labels,
+                                     predictions=predicted,
+                                     margins=5,
+                                     idx2label=idx2label,
+                                    )
+                new_trans = add_margin(img_list=inputs[0:8, :, :],
+                                       labels=labels,
+                                       predictions=predicted,
+                                       margins=5,
+                                       idx2label=idx2label,
+                                      )
+                writer.add_image(f"Image_val_marg/%d_input_no_transform" % i,
+                                torchvision.utils.make_grid(new_org),
                                 epoch)
-                writer.add_image(f"Image_val/%d_input_transform.{labels_str}" % i,
-                                torchvision.utils.make_grid(inputs[0:8, :, :]),
-                             epoch)
-
-            inputs = inputs.cpu()
-            labels = labels.cpu()
-            predicted = predicted.cpu()
+                writer.add_image(f"Image_val/%d_input_transform" % i,
+                                torchvision.utils.make_grid(new_trans),
+                                epoch)
+            
             imshow(torchvision.utils.make_grid(inputs))
             image_path = f"data/visualise/{i}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
             plt.savefig(image_path)
@@ -379,7 +424,7 @@ def main():
     parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--batch_size', default=32, type=int)
-    parser.add_argument('--num_epochs', default=10, type=int)
+    parser.add_argument('--num_epochs', default=30, type=int)
     parser.add_argument('--keep_k_most_common_labels', default=5, type=int)
     parser.add_argument('--dataset', default="five-class")
     parser.add_argument('--learning_rate', default=0.005, type=float)
@@ -398,11 +443,11 @@ def main():
         raise NotImplementedError(f"Means and std are not computed for {args.dataset}")
     transform_train = transforms.Compose([transforms.RandomAffine(degrees=90),
                                           transforms.RandomHorizontalFlip(),
-                                          transforms.CenterCrop(224),
+                                          transforms.RandomCrop(320),
                                           transforms.Resize(224),
                                           transforms.ToTensor(),
                                           transforms.Normalize(mean, std)])
-    transform_val = transforms.Compose([transforms.CenterCrop(224),
+    transform_val = transforms.Compose([transforms.RandomCrop(320),
                                         transforms.Resize(224),
                                         transforms.ToTensor(),
                                         transforms.Normalize(mean, std)])
