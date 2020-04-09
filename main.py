@@ -2,236 +2,25 @@ import argparse
 import glob
 import os
 import time
-from collections import Counter, defaultdict
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
+import tensorflow as tf
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import torchvision
-from PIL import Image, ImageDraw
-from torch.utils.data import Dataset
-from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-from torchvision.models import resnet18
+from torchvision.models import resnet34
 from zsvision.zs_beartype import beartype
 from zsvision.zs_utils import BlockTimer
 
 from metrics import AverageMeter, ProgressMeter, accuracy
-
-
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 61 * 61, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 5)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 61 * 61)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-
-class PaintingsDataset(Dataset):
-    @beartype
-    def __init__(
-            self,
-            data_dir: Path,
-            csv_file_path: Path,
-            split: str,
-            im_suffix: str,
-            keep_k_most_common_labels: int,
-            # writer: torch.utils.tensorboard.writer.SummaryWriter,
-            transform: transforms.Compose = None,
-    ):
-        with open(csv_file_path, "r") as f:
-            csv_contents = pd.read_csv(f)
-        self.csv_contents = csv_contents
-        self.data_dir = data_dir
-        self.csv_contents = self.sanitise_csv_contents(self.csv_contents)
-        im_info = self.filter_to_k_most_common_labels(k=keep_k_most_common_labels)
-        self.label2idx = im_info["label_dict"]
-        keep = np.where(np.array(im_info["splits"]) == split)[0]
-        # keep = np.array([0] * len(keep))
-        self.labels = np.array(im_info["labels"])[keep]
-        self.images = [data_dir / im_name for im_name
-                       in np.array(im_info["images"])[keep]]
-        self.transform = transform
-
-    @beartype
-    def sanitise_csv_contents(self, csv_contents: pd.DataFrame) -> pd.DataFrame:
-        """This function fixes inconsistencies in the image naming convention used
-        to store the paintings.  Some images have the form:
-            {name_and_date}-{number}
-        whereas others have the form:
-            {name_and_date}_{number}
-        To address this, we loop over each image file and check each naming style for
-        existence, then update the meta data accordingly.
-
-        Args:
-            csv_contents: the contents of the csv provided by Attila.
-
-        Returns:
-            the contents of the csv after fixing the image paths.
-        """
-        sanitised = []
-        img_files = list(csv_contents.img_file)
-        # These files do not exist in our image collection
-        exclude = {
-            "rwa-spa_2016-227.jpg",
-            "rwa-spa_2016-238.jpg",
-            "rwa-spa_2016-239.jpg",
-            "rwa-spa_2016-240.jpg",
-            "rwa-spa_2018-178.jpg",
-        }
-        keep = []
-        for ii, img_file in enumerate(img_files):
-            if img_file in exclude:
-                continue
-            elif (self.data_dir / img_file).exists():
-                pass
-            else:
-                # replace the last occurence of a hyphen with underscore to match
-                # inconsistent filenames
-                img_file = img_file[::-1].replace("-", "_", 1)[::-1]
-                msg = f"img_file: {img_file} does not exist!"
-                assert (self.data_dir / img_file).exists(), msg
-            keep.append(ii)
-            sanitised.append(img_file)
-        keep = np.array(keep)
-        csv_contents = csv_contents.iloc[csv_contents.index.isin(keep)]
-        pd.options.mode.chained_assignment = None
-        csv_contents.loc[:, "img_file"] = sanitised
-        return csv_contents
-
-    @beartype
-    def filter_to_k_most_common_labels(self, k: int) -> Dict:
-        labels = list(self.csv_contents['medium'])
-        topk_classes = Counter(labels).most_common(k)
-        min_number = int(topk_classes[k - 1][1])
-        topk_classes = sorted(topk_classes)
-        label_dict = {}
-        for i, el in enumerate(topk_classes):
-            label_dict[el[0]] = i
-        images = []
-        labels = []
-        for i, el in enumerate(self.csv_contents['img_file']):
-            if self.csv_contents.iloc[i]['medium'] in dict(topk_classes).keys():
-                images.append(el)
-                labels.append(label_dict[self.csv_contents.iloc[i]['medium']])
-        labels = np.array(labels)
-        images = np.array(images)
-        balanced_labels, balanced_ims = [], []
-        num_train = int(min_number * 0.8)
-        splits = []
-        for subset in ("train", "val"):
-            for class_idx in label_dict.values():
-                keep = np.where(labels == class_idx)[0][:min_number]
-                if subset == "train":
-                    keep = keep[:num_train]
-                elif subset == "val":
-                    keep = keep[num_train:]
-                else:
-                    raise ValueError(f"Unknown subset: {subset}")
-                balanced_ims.extend(images[keep])
-                balanced_labels.extend(labels[keep])
-                splits.extend([subset] * keep.size)
-        im_info = {
-            "label_dict": label_dict,
-            "images": balanced_ims,
-            "labels": balanced_labels,
-            "splits": splits,
-        }
-        return im_info
-
-    def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        label = self.labels[idx]
-        img = Image.open(self.images[idx])
-        transform_no_change = transforms.Compose([transforms.CenterCrop(320),
-                                                  transforms.Resize(224),
-                                                  transforms.ToTensor()])
-        if self.transform is not None:
-            img_org = transform_no_change(img)
-            img = self.transform(img)
-
-        return img_org, img, label
-
-
-def stratify(labels):
-    dict_of_lists = defaultdict(list)
-    for i, el in enumerate(labels):
-        dict_of_lists[el].append(i)
-    return dict_of_lists
-
-@beartype
-def add_margin(
-        img_list: torch.Tensor,
-        labels: torch.Tensor,
-        predictions: torch.Tensor,
-        margins: int,
-        idx2label: dict,
-):
-    new_images = []
-    for k, img in enumerate(img_list):
-        if labels[k] == predictions[k]:
-            color = "green"
-        else:
-            color = "red"
-        transformToPil = transforms.Compose([transforms.ToPILImage()])
-        transformToTensor = transforms.Compose([transforms.ToTensor()])
-        pil_img = transformToPil(img)
-        width, height = pil_img.size
-        bottom = top = right = left = margins
-        new_width = width + right + left
-        new_height = height + top + bottom
-        result = Image.new(pil_img.mode, (new_width, new_height), color)
-        result.paste(pil_img, (left, top))
-        d = ImageDraw.Draw(result)
-        d.text((10, 10), idx2label[labels[k].item()], fill="black")
-        result = transformToTensor(result)
-        new_images.append(result)
-    return new_images
-
-def imshow(img):
-    npimg = img.numpy()
-    img = np.transpose(npimg, (1, 2, 0))
-    img -= img.min()
-    img /= img.max()
-    plt.imshow(img)
-    plt.show()
-    fig_dir = Path("data/figsand")
-    fig_dir.mkdir(exist_ok=True, parents=True)
-    plt.savefig(str(fig_dir / "im.png"))
-
-
-@beartype
-def build_summary_writer(
-        learning_rate: float,
-        batch_size: int,
-        model: str,
-) -> SummaryWriter:
-    timestamp = datetime.now().strftime("%d-%b-%Y_%H-%M-%S")
-    log_dir = Path("data/logs") / f"model-{model}-lr-{learning_rate}-bs-{batch_size}" / timestamp
-    log_dir.mkdir(exist_ok=True, parents=True)
-    return SummaryWriter(str(log_dir))
-
+# from network import Net
+from paintings_dataset import PaintingsDataset
+from utils import add_margin, imshow, build_summary_writer
 
 @beartype
 def train(
@@ -240,10 +29,11 @@ def train(
         train_loader: torch.utils.data.DataLoader,
         device: torch.device,
         epoch: int,
-        learning_rate: float,
         frequency: int,
         writer: torch.utils.tensorboard.writer.SummaryWriter,
         idx2label: dict,
+        font: Path,
+        optimizer: torch.optim.SGD,
 ):
     dataiter = iter(train_loader)
     _, images, labels = dataiter.next()
@@ -254,7 +44,6 @@ def train(
 
     net.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9)
 
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -288,7 +77,7 @@ def train(
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-        # labels_str = ('|').join(list(map(idx2label.get, labels.tolist())))
+
         inputs_org = inputs_org.cpu()
         inputs = inputs.cpu()
         labels = labels.cpu()
@@ -301,12 +90,14 @@ def train(
                                  predictions=predicted,
                                  margins=5,
                                  idx2label=idx2label,
+                                 font=font,
                                 )
             new_trans = add_margin(img_list=inputs[0:8, :, :],
                                    labels=labels,
                                    predictions=predicted,
                                    margins=5,
                                    idx2label=idx2label,
+                                   font=font,
                                   )
             writer.add_image(f"Image_train_marg/%d_input_no_transform" % i,
                              torchvision.utils.make_grid(new_org),
@@ -333,6 +124,7 @@ def testval(
         frequency: int,
         writer: torch.utils.tensorboard.writer.SummaryWriter,
         idx2label: dict,
+        font: Path,
 ):
     # net = Net()
     # net = torch.load(ckpt_path)
@@ -385,33 +177,41 @@ def testval(
             labels = labels.cpu()
             predicted = predicted.cpu()
 
-            labels_str = ('|').join(list(map(idx2label.get, labels.tolist())))
             if i % frequency == 0:
                 progress.display(i)
-            if i == 0:
-                new_org = add_margin(img_list=inputs_org[0:8, :, :],
-                                     labels=labels,
-                                     predictions=predicted,
-                                     margins=5,
-                                     idx2label=idx2label,
+            count = 0
+            # if i == 0:
+            while count + 8 < len(inputs_org):
+                new_org = add_margin(img_list=inputs_org[count:count+8, :, :],
+                                        labels=labels,
+                                        predictions=predicted,
+                                        margins=5,
+                                        idx2label=idx2label,
+                                        font=font,
                                     )
-                new_trans = add_margin(img_list=inputs[0:8, :, :],
-                                       labels=labels,
-                                       predictions=predicted,
-                                       margins=5,
-                                       idx2label=idx2label,
-                                      )
-                writer.add_image(f"Image_val_marg/%d_input_no_transform" % i,
+                new_trans = add_margin(img_list=inputs[count:count+8, :, :],
+                                        labels=labels,
+                                        predictions=predicted,
+                                        margins=5,
+                                        idx2label=idx2label,
+                                        font=font,
+                                        )
+                writer.add_image(f"Image_val_marg_{epoch}_{count/8}/%d_input_no_transform" % i,
                                 torchvision.utils.make_grid(new_org),
                                 epoch)
-                writer.add_image(f"Image_val/%d_input_transform" % i,
+                writer.add_image(f"Image_val_{epoch}_{count/8}/%d_input_transform" % i,
                                 torchvision.utils.make_grid(new_trans),
                                 epoch)
-            
+                count += 8
             imshow(torchvision.utils.make_grid(inputs))
             image_path = f"data/visualise/{i}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
             plt.savefig(image_path)
             os.chmod(image_path, 0o777)
+            confusion_matrix = tf.math.confusion_matrix(np.asarray(labels),
+                                                        np.asarray(predicted),
+                                                        num_classes=5)
+            print("Validation confusion matrix:")
+            print(np.asarray(confusion_matrix))
 
     print(f" * Acc@1 {top1.avg:.3f}")
     return top1.avg, losses.avg
@@ -429,13 +229,12 @@ def main():
     parser.add_argument('--dataset', default="five-class")
     parser.add_argument('--learning_rate', default=0.005, type=float)
     parser.add_argument('--print_freq', default=10, type=int)
+    parser.add_argument('--font_type', default="/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", type=Path)
     parser.add_argument('--im_suffix', default=".jpg",
                         help="the suffix for images in the dataset")
     parser.add_argument('--visualise', default="data/visualise/*", type=Path)
     args = parser.parse_args()
-
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
     if args.dataset == "five-class":
         mean = (0.5827, 0.5678, 0.5294)
         std = (0.2707, 0.2595, 0.2776)
@@ -443,18 +242,20 @@ def main():
         raise NotImplementedError(f"Means and std are not computed for {args.dataset}")
     transform_train = transforms.Compose([transforms.RandomAffine(degrees=90),
                                           transforms.RandomHorizontalFlip(),
-                                          transforms.RandomCrop(320),
+                                          transforms.RandomVerticalFlip(),
+                                        #   transforms.Grayscale(num_output_channels=3),
+                                          transforms.RandomCrop(490),
                                           transforms.Resize(224),
                                           transforms.ToTensor(),
                                           transforms.Normalize(mean, std)])
-    transform_val = transforms.Compose([transforms.RandomCrop(320),
+    transform_val = transforms.Compose([transforms.RandomCrop(490),
                                         transforms.Resize(224),
                                         transforms.ToTensor(),
                                         transforms.Normalize(mean, std)])
     writer = build_summary_writer(
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
-        model='resnet18',
+        model='resnet34',
     )
     dataset_kwargs = {
         "data_dir": args.im_dir,
@@ -470,10 +271,8 @@ def main():
         split='train',
         transform=transform_train,
         **dataset_kwargs,
-        # writer=writer,
     )
-    # imag, _ = paintings_train[0]
-    # print(imag.size())
+
     train_loader = torch.utils.data.DataLoader(
         paintings_train,
         shuffle=True,
@@ -484,18 +283,23 @@ def main():
         split="val",
         transform=transform_val,
         **dataset_kwargs,
-        # writer=writer,
     )
     val_loader = torch.utils.data.DataLoader(
         dataset=paintings_val,
-        shuffle=False,
+        shuffle=True,
         drop_last=False,
         **loader_kwargs,
     )
     # net = Net()
-    net = resnet18(pretrained=True)
-
+    net = resnet34(pretrained=True)
     net._modules['fc'] = nn.Linear(512, 5, bias=True)
+    optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9)
+    # optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                           'min',
+                                                           patience=2,
+                                                           factor=0.5)
+                                                        #    cooldown=1)
     for epoch in range(args.num_epochs):
         with BlockTimer(f"[{epoch}/{args.num_epochs} training and eval"):
             train_acc, train_loss = train(
@@ -504,10 +308,11 @@ def main():
                 device=device,
                 ckpt_path=args.ckpt_path,
                 train_loader=train_loader,
-                learning_rate=args.learning_rate,
                 frequency=args.print_freq,
                 writer=writer,
                 idx2label=dict(map(reversed, paintings_train.label2idx.items())),
+                font=args.font_type,
+                optimizer=optimizer,
             )
             val_acc, val_loss = testval(
                 net=net,
@@ -519,7 +324,9 @@ def main():
                 frequency=args.print_freq,
                 writer=writer,
                 idx2label=dict(map(reversed, paintings_train.label2idx.items())),
+                font=args.font_type,
             )
+            scheduler.step(val_loss)
 
             writer.add_scalar("train_loss", train_loss, global_step=epoch)
             writer.add_scalar("val_loss", val_loss, global_step=epoch)
