@@ -3,6 +3,10 @@
 Statistics for the 124-painting subset covering five media:
     RGB mean: [0.5827, 0.5678, 0.5294]
     RGB std: [0.2707, 0.2595, 0.2776]
+
+Statistics for the 20668-painting subset artuk covering five media:
+    RGB mean: [0.4971, 0.4365, 0.3489]
+    RGB std: [0.2594, 0.2457, 0.2373]
 """
 import argparse
 from pathlib import Path
@@ -11,25 +15,32 @@ import torch
 from torchvision import transforms
 from zsvision.zs_utils import BlockTimer
 
-from main import PaintingsDataset
+from paintings_dataset import PaintingsDataset
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--csv_path', default="data/spa-classify.csv?dl=0", type=Path)
-    parser.add_argument('--im_dir', default="data/pictures/spa_images", type=Path)
-    parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
+    parser.add_argument('--csv_path',
+                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists",
+                        type=Path)
+    parser.add_argument('--im_dir',
+                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/paintings",
+                        type=Path)
+    parser.add_argument('--ckpt_path', default="data/modelartuk.pt", type=Path)
+    parser.add_argument('--im_suffix', default=".jpg",
+                        help="the suffix for images in the dataset")
     args = parser.parse_args()
 
     with BlockTimer("computing statistics for dataset"):
-        transform = transforms.Compose([transforms.Resize(256),
-                                        transforms.CenterCrop(256),
+        transform = transforms.Compose([transforms.CenterCrop(69),
+                                        transforms.Resize(224),
                                         transforms.ToTensor()])
         dataset = PaintingsDataset(
             data_dir=args.im_dir,
             split="train",
             transform=transform,
-            csv_file_path=args.csv_path,
+            csv_path=args.csv_path,
+            im_suffix=args.im_suffix,
         )
         loader = torch.utils.data.DataLoader(
             dataset=dataset,
@@ -38,7 +49,7 @@ def main():
             num_workers=4,
             drop_last=False,
         )
-        ims, _ = next(iter(loader))
+        _, ims, _ = next(iter(loader))
         ims = ims.refine_names("N", "C", "H", "W")
         rgb_mean = ims.mean(("N", "H", "W"))
         rgb_std = ims.std(("N", "H", "W"))
