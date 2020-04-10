@@ -3,7 +3,6 @@ import glob
 import os
 import time
 from pathlib import Path
-from typing import Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -125,6 +124,7 @@ def testval(
         writer: torch.utils.tensorboard.writer.SummaryWriter,
         idx2label: dict,
         font: Path,
+        number_output_classes: int,
 ):
     # net = Net()
     # net = torch.load(ckpt_path)
@@ -148,9 +148,9 @@ def testval(
 
     end = time.time()
 
-    files = glob.glob(str(visualise))
-    for f in files:
-        os.remove(f)
+    # files = glob.glob(str(visualise))
+    # for f in files:
+    #     os.remove(f)
     with torch.no_grad():
         for i, data in enumerate(val_loader, 0):
             inputs_org, inputs, labels = data[0].to(device), data[1].to(device), data[2].to(device)
@@ -203,13 +203,13 @@ def testval(
                                 torchvision.utils.make_grid(new_trans),
                                 epoch)
                 count += 8
-            imshow(torchvision.utils.make_grid(inputs))
-            image_path = f"data/visualise/{i}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
-            plt.savefig(image_path)
-            os.chmod(image_path, 0o777)
+            # imshow(torchvision.utils.make_grid(inputs))
+            # image_path = f"data/visualise/{i}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
+            # plt.savefig(image_path)
+            # os.chmod(image_path, 0o777)
             confusion_matrix = tf.math.confusion_matrix(np.asarray(labels),
                                                         np.asarray(predicted),
-                                                        num_classes=5)
+                                                        num_classes=number_output_classes)
             print("Validation confusion matrix:")
             print(np.asarray(confusion_matrix))
 
@@ -219,36 +219,41 @@ def testval(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--csv_path', default="data/spa-classify.csv?dl=0", type=Path)
-    parser.add_argument('--im_dir', default="data/pictures/spa_images", type=Path)
-    parser.add_argument('--ckpt_path', default="data/model.pt", type=Path)
+    parser.add_argument('--csv_path',
+                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists",
+                        type=Path)
+    parser.add_argument('--im_dir',
+                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/paintings",
+                        type=Path)
+    parser.add_argument('--ckpt_path', default="data/modelartuk.pt", type=Path)
     parser.add_argument('--num_workers', default=4, type=int)
-    parser.add_argument('--batch_size', default=32, type=int)
-    parser.add_argument('--num_epochs', default=30, type=int)
-    parser.add_argument('--keep_k_most_common_labels', default=5, type=int)
+    parser.add_argument('--batch_size', default=128, type=int)
+    parser.add_argument('--num_epochs', default=10, type=int)
     parser.add_argument('--dataset', default="five-class")
     parser.add_argument('--learning_rate', default=0.005, type=float)
     parser.add_argument('--print_freq', default=10, type=int)
-    parser.add_argument('--font_type', default="/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", type=Path)
+    parser.add_argument('--font_type',
+                        default="/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+                        type=Path)
     parser.add_argument('--im_suffix', default=".jpg",
                         help="the suffix for images in the dataset")
-    parser.add_argument('--visualise', default="data/visualise/*", type=Path)
+    parser.add_argument('--visualise', default="data/artuk/visualise/*", type=Path)
     args = parser.parse_args()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if args.dataset == "five-class":
-        mean = (0.5827, 0.5678, 0.5294)
-        std = (0.2707, 0.2595, 0.2776)
+        mean = (0.4971, 0.4365, 0.3489)
+        std = (0.2594, 0.2457, 0.2373)
     else:
         raise NotImplementedError(f"Means and std are not computed for {args.dataset}")
     transform_train = transforms.Compose([transforms.RandomAffine(degrees=90),
                                           transforms.RandomHorizontalFlip(),
                                           transforms.RandomVerticalFlip(),
                                         #   transforms.Grayscale(num_output_channels=3),
-                                          transforms.RandomCrop(490),
+                                          transforms.RandomCrop(69),
                                           transforms.Resize(224),
                                           transforms.ToTensor(),
                                           transforms.Normalize(mean, std)])
-    transform_val = transforms.Compose([transforms.RandomCrop(490),
+    transform_val = transforms.Compose([transforms.CenterCrop(69),
                                         transforms.Resize(224),
                                         transforms.ToTensor(),
                                         transforms.Normalize(mean, std)])
@@ -259,8 +264,7 @@ def main():
     )
     dataset_kwargs = {
         "data_dir": args.im_dir,
-        "csv_file_path": args.csv_path,
-        "keep_k_most_common_labels": args.keep_k_most_common_labels,
+        "csv_path": args.csv_path,
         "im_suffix": args.im_suffix,
     }
     loader_kwargs = {
@@ -292,9 +296,13 @@ def main():
     )
     # net = Net()
     net = resnet34(pretrained=True)
-    net._modules['fc'] = nn.Linear(512, 5, bias=True)
+    number_output_classes = len(paintings_train.label_dict)
+    print(f"Number_output_classes:{number_output_classes}")
+    net._modules['fc'] = nn.Linear(512, number_output_classes, bias=True)
     optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9)
-    # optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+    # optimizer = torch.optim.Adam(net.parameters(),
+    #                              lr=args.learning_rate, betas=(0.9, 0.999),
+    #                              eps=1e-08, weight_decay=0, amsgrad=False)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                            'min',
                                                            patience=2,
@@ -310,7 +318,7 @@ def main():
                 train_loader=train_loader,
                 frequency=args.print_freq,
                 writer=writer,
-                idx2label=dict(map(reversed, paintings_train.label2idx.items())),
+                idx2label=dict(map(reversed, paintings_train.label_dict.items())),
                 font=args.font_type,
                 optimizer=optimizer,
             )
@@ -323,8 +331,9 @@ def main():
                 visualise=args.visualise,
                 frequency=args.print_freq,
                 writer=writer,
-                idx2label=dict(map(reversed, paintings_train.label2idx.items())),
+                idx2label=dict(map(reversed, paintings_train.label_dict.items())),
                 font=args.font_type,
+                number_output_classes=number_output_classes,
             )
             scheduler.step(val_loss)
 
