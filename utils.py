@@ -75,6 +75,6 @@ def build_summary_writer(
         model: str,
 ) -> SummaryWriter:
     timestamp = datetime.now().strftime("%d-%b-%Y_%H-%M-%S")
-    log_dir = Path("data/logs") / f"model-{model}-lr-{learning_rate}-bs-{batch_size}" / timestamp
+    log_dir = Path("data/artuk/logs") / f"model-{model}-lr-{learning_rate}-bs-{batch_size}" / timestamp
     log_dir.mkdir(exist_ok=True, parents=True)
     return SummaryWriter(str(log_dir))
