@@ -8,11 +8,19 @@ import pandas as pd
 
 
 def get_painters_count(location, painters):
+    '''
+    Get .csv file containing names of painters and how many paintings
+    they have in descending order.
+    '''
     w = csv.writer(open(location / "artuk_painters_count.csv", "w"))
     for key, val in Counter(painters).most_common():
         w.writerow([key, val])
 
 def get_painter_link_csv(location, painters):
+    '''
+    Create .csv file that has painters names in order and the associated
+    image links and names
+    '''
     links = []
     count = []
     with open(location / "yp_links.txt", 'r') as f:
@@ -31,11 +39,17 @@ def get_painter_link_csv(location, painters):
     pd.DataFrame(dict_painters_links_count_ord).to_csv(location / "artuk_painters_links.csv")
 
 def get_painter_names(location, painters):
+    '''
+    Create a .txt file with only names of painters keeping the order
+    '''
     painters_text = ('\n').join(painters)
     with open(location / "painters_artuk.txt", 'a') as f:
         f.write(painters_text)
 
 def get_csv_info(location):
+    '''
+    Extract only painter names from the yp_alts.txt file
+    '''
     painters = []
     with open(location / "yp_alts.txt", "r") as f:
         for row in f:
