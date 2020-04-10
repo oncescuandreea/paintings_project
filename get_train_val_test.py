@@ -1,3 +1,4 @@
+import argparse
 import csv
 from pathlib import Path
 
@@ -17,9 +18,9 @@ def train_test_val(location, train_split, val_split):
                             " Netherlandish School", " British (Welsh) School",
                             " German School"]
 
-    csv_train = csv.writer(open(location / "artuk_train.csv", "w"))
-    csv_val = csv.writer(open(location / "artuk_val.csv", "w"))
-    csv_test = csv.writer(open(location/ "artuk_test.csv", "w"))
+    csv_train = csv.writer(open(location / "artuk_train1.csv", "w"))
+    csv_val = csv.writer(open(location / "artuk_val1.csv", "w"))
+    csv_test = csv.writer(open(location/ "artuk_test1.csv", "w"))
 
     with open(location / "artuk_painters_count.csv") as f:
         for row_f in f:
@@ -55,10 +56,15 @@ def train_test_val(location, train_split, val_split):
     g.close()
 
 def main():
-    location = Path("/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists")
-    train_split = 0.65
-    val_split = 0.2
-    train_test_val(location, train_split, val_split)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--lists_locations',
+                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists",
+                        type=Path)
+    parser.add_argument('--train_split', default=0.65, type=float)
+    parser.add_argument('--val_split', default=0.2, type = float)
+    args = parser.parse_args()
+
+    train_test_val(args.lists_locations, args.train_split, args.val_split)
 
 if __name__ == '__main__':
     main()
