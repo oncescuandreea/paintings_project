@@ -12,18 +12,23 @@ def get_min_size(csv_contents_path, data_dir):
     for i, el in enumerate(csv_contents.iloc[:, 1]):
             img = Image.open(data_dir / f"{el}.jpg")
             min_size = np.min(img.size)
+            max_size = np.max(img.size)
             if i == 0:
                 min_size_general = min_size
+                max_size_general = max_size
             else:
                 if min_size < min_size_general:
                     min_size_general = min_size
-    return min_size_general
+                if max_size > max_size_general:
+                    max_size_general = max_size
+    return min_size_general, max_size_general
 
 def main():
     data_dir = Path("/scratch/shared/beegfs/oncescu/pictures_project/artuk/paintings")
     csv_contents_path = Path("/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists/artuk_train.csv")
-    min_size_general = get_min_size(csv_contents_path, data_dir)
+    min_size_general, max_size_general = get_min_size(csv_contents_path, data_dir)
     print(f"Minimum pixel size of a painting is {min_size_general}")
+    print(f"Maximum pixel size of a painting is {max_size_general}")
 
 
 if __name__ == '__main__':
