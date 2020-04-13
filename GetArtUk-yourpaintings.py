@@ -28,9 +28,9 @@ def get_painter_link_csv(location, painters):
             link = re.sub("[\n]", "", row)
             links.append(link)
             count.append(i+1)
-    dict_painters_links_count = {'painter': painters,
-                                 'address': links,
-                                 'counter': count}
+    # dict_painters_links_count = {'painter': painters,
+    #                              'address': links,
+    #                              'counter': count}
     ordered_dict = sorted(zip(painters, links, count))
     painters_ord, links_ord, count_ord = list(map(list, zip(*ordered_dict)))
     dict_painters_links_count_ord = {'painter': painters_ord,
@@ -46,28 +46,48 @@ def get_painter_names(location, painters):
     with open(location / "painters_artuk.txt", 'a') as f:
         f.write(painters_text)
 
+
+def is_valid_dateyear(
+        token: str,
+        min_year: int = -5000,
+        max_year: int = 2050,
+) -> bool:
+    """Helper functiont to check if the token represents a valid date.
+
+    Algorithm:
+       1. Check if the token is a valid integer
+       2. Check that this integer could be a year.
+    """
+    try:
+        year = int(token)
+        return min_year <= year <= max_year
+    except ValueError:
+        return False
+
+
 def get_csv_info(location):
     '''
     Extract only painter names from the yp_alts.txt file
     '''
     painters = []
     with open(location / "yp_alts.txt", "r") as f:
-        for row in f:
-            info_components = row.split(',')
-            last_component = re.sub("[\s\n]", "", info_components[-1])
-            
-            if len(info_components) == 2:
-                painter_name = re.sub("[\n]", "", info_components[-1])[1:]
-            elif last_component >= '1000' and last_component <= '9999':
-                painter_name = info_components[-2][1:]
-            else:
-                painter_name = re.sub("[\n]", "", info_components[-1])[1:]
-            painters.append(painter_name)
+        rows = f.read().splitlines()
+
+    for row in rows:
+        info_components = [x.strip() for x in row.split(',')]
+        last_token = info_components[-1]
+        if is_valid_dateyear(last_token):
+            painter_name = info_components[-2]
+        else:
+            painter_name = last_token
+        painters.append(painter_name)
     return painters
 
 def main():
     location = Path("/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists")
     painters = get_csv_info(location)
+    get_painters_count(location, painters)
+    get_painter_names(location, painters)
     get_painter_link_csv(location, painters)
 
 if __name__ == '__main__':
