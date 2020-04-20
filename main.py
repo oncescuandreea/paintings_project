@@ -6,7 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import tensorflow as tf
+# import tensorflow as tf
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -98,12 +98,12 @@ def train(
                                    idx2label=idx2label,
                                    font=font,
                                   )
-            writer.add_image(f"Image_train_marg/%d_input_no_transform" % i,
-                             torchvision.utils.make_grid(new_org),
-                             epoch)
-            writer.add_image(f"Image_train/%d_input_transform" % i,
-                             torchvision.utils.make_grid(new_trans),
-                             epoch)
+            # writer.add_image(f"Image_train_marg/%d_input_no_transform" % i,
+            #                  torchvision.utils.make_grid(new_org),
+            #                  epoch)
+            # writer.add_image(f"Image_train/%d_input_transform" % i,
+            #                  torchvision.utils.make_grid(new_trans),
+            #                  epoch)
 
     print(f" * Acc@1 {top1.avg:.3f}")
     torch.save(net, ckpt_path)
@@ -196,65 +196,57 @@ def testval(
                                         idx2label=idx2label,
                                         font=font,
                                         )
-                writer.add_image(f"Image_val_marg_{epoch}_{count/8}/%d_input_no_transform" % i,
-                                torchvision.utils.make_grid(new_org),
-                                epoch)
-                writer.add_image(f"Image_val_{epoch}_{count/8}/%d_input_transform" % i,
-                                torchvision.utils.make_grid(new_trans),
-                                epoch)
+                # writer.add_image(f"Image_val_marg_{epoch}_{count/8}/%d_input_no_transform" % i,
+                #                 torchvision.utils.make_grid(new_org),
+                #                 epoch)
+                # writer.add_image(f"Image_val_{epoch}_{count/8}/%d_input_transform" % i,
+                #                 torchvision.utils.make_grid(new_trans),
+                #                 epoch)
                 count += 8
             # imshow(torchvision.utils.make_grid(inputs))
             # image_path = f"data/visualise/{i}_{('-').join(list(map(str, labels.tolist())))}_{('-').join(list(map(str, predicted.tolist())))}.jpg"
             # plt.savefig(image_path)
             # os.chmod(image_path, 0o777)
-            confusion_matrix = tf.math.confusion_matrix(np.asarray(labels),
-                                                        np.asarray(predicted),
-                                                        num_classes=number_output_classes)
-            print("Validation confusion matrix:")
-            print(np.asarray(confusion_matrix))
+            # confusion_matrix = tf.math.confusion_matrix(np.asarray(labels),
+            #                                             np.asarray(predicted),
+            #                                             num_classes=number_output_classes)
+            # print("Validation confusion matrix:")
+            # print(np.asarray(confusion_matrix))
 
     print(f" * Acc@1 {top1.avg:.3f}")
     return top1.avg, losses.avg
 
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--csv_path',
-                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists",
-                        type=Path)
-    parser.add_argument('--im_dir',
-                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/paintings",
-                        type=Path)
-    parser.add_argument('--ckpt_path', default="data/modelartuk.pt", type=Path)
-    parser.add_argument('--num_workers', default=4, type=int)
-    parser.add_argument('--batch_size', default=128, type=int)
-    parser.add_argument('--num_epochs', default=10, type=int)
-    parser.add_argument('--dataset', default="five-class")
-    parser.add_argument('--learning_rate', default=0.005, type=float)
-    parser.add_argument('--print_freq', default=10, type=int)
-    parser.add_argument('--font_type',
-                        default="/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-                        type=Path)
-    parser.add_argument('--im_suffix', default=".jpg",
-                        help="the suffix for images in the dataset")
-    parser.add_argument('--visualise', default="data/artuk/visualise/*", type=Path)
-    args = parser.parse_args()
+def initialise(args):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if args.dataset == "five-class":
         mean = (0.4971, 0.4365, 0.3489)
         std = (0.2594, 0.2457, 0.2373)
     else:
         raise NotImplementedError(f"Means and std are not computed for {args.dataset}")
-    transform_train = transforms.Compose([transforms.RandomAffine(degrees=90),
+    transform_train1 = transforms.Compose([transforms.RandomAffine(degrees=90),
                                           transforms.RandomHorizontalFlip(),
                                           transforms.RandomVerticalFlip(),
+                                          transforms.Resize(256),
+                                          transforms.RandomCrop(224),
                                         #   transforms.Grayscale(num_output_channels=3),
-                                          transforms.RandomCrop(69),
+                                        #   transforms.CenterCrop(200),
+                                        #   transforms.Resize(224),
+                                          transforms.ToTensor(),
+                                          transforms.Normalize(mean, std)])
+    transform_train2 = transforms.Compose([transforms.RandomAffine(degrees=90),
+                                          transforms.RandomHorizontalFlip(),
+                                          transforms.RandomVerticalFlip(),
+                                        #   transforms.Resize(256),
+                                        #   transforms.RandomCrop(224),
+                                        #   transforms.Grayscale(num_output_channels=3),
+                                          transforms.CenterCrop(200),
                                           transforms.Resize(224),
                                           transforms.ToTensor(),
                                           transforms.Normalize(mean, std)])
-    transform_val = transforms.Compose([transforms.CenterCrop(69),
-                                        transforms.Resize(224),
+    transform_val = transforms.Compose([transforms.Resize(256),
+                                        transforms.CenterCrop(224),
+                                        # transforms.CenterCrop(200),
+                                        # transforms.Resize(224),
                                         transforms.ToTensor(),
                                         transforms.Normalize(mean, std)])
     writer = build_summary_writer(
@@ -271,14 +263,24 @@ def main():
         "batch_size": args.batch_size,
         "num_workers": args.num_workers
     }
-    paintings_train = PaintingsDataset(
+    paintings_train1 = PaintingsDataset(
         split='train',
-        transform=transform_train,
+        transform=transform_train1,
         **dataset_kwargs,
     )
-
-    train_loader = torch.utils.data.DataLoader(
-        paintings_train,
+    paintings_train2 = PaintingsDataset(
+        split='train',
+        transform=transform_train2,
+        **dataset_kwargs,
+    )
+    train_loader1 = torch.utils.data.DataLoader(
+        paintings_train1,
+        shuffle=True,
+        drop_last=True,
+        **loader_kwargs,
+    )
+    train_loader2 = torch.utils.data.DataLoader(
+        paintings_train2,
         shuffle=True,
         drop_last=True,
         **loader_kwargs,
@@ -296,20 +298,29 @@ def main():
     )
     # net = Net()
     net = resnet34(pretrained=True)
-    number_output_classes = len(paintings_train.label_dict)
+    number_output_classes = len(paintings_train1.label_dict)
     print(f"Number_output_classes:{number_output_classes}")
     net._modules['fc'] = nn.Linear(512, number_output_classes, bias=True)
-    optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9)
+    # params = (net.parameters()).to(device)
+    optimizer = optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=0.001)
     # optimizer = torch.optim.Adam(net.parameters(),
-    #                              lr=args.learning_rate, betas=(0.9, 0.999),
-    #                              eps=1e-08, weight_decay=0, amsgrad=False)
+    #                              lr=args.learning_rate / 100, betas=(0.9, 0.999),
+    #                              eps=1e-08, weight_decay=0.001, amsgrad=False)
+    # optimizer = torch.optim.Adagrad(params, lr=args.learning_rate, lr_decay=0,
+    #                                 weight_decay=0, initial_accumulator_value=0, eps=1e-10)
+    # optimizer = torch.optim.RMSprop(net.parameters(), lr=args.learning_rate, alpha=0.59, eps=1e-08,
+    #                                 weight_decay=0, momentum=0, centered=False)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                            'min',
                                                            patience=2,
                                                            factor=0.5)
                                                         #    cooldown=1)
-    for epoch in range(args.num_epochs):
+    for i, epoch in enumerate(range(args.num_epochs)):
         with BlockTimer(f"[{epoch}/{args.num_epochs} training and eval"):
+            if i % 2 == 0:
+                train_loader = train_loader1
+            else:
+                train_loader = train_loader2
             train_acc, train_loss = train(
                 net=net,
                 epoch=epoch,
@@ -318,7 +329,7 @@ def main():
                 train_loader=train_loader,
                 frequency=args.print_freq,
                 writer=writer,
-                idx2label=dict(map(reversed, paintings_train.label_dict.items())),
+                idx2label=dict(map(reversed, paintings_train1.label_dict.items())),
                 font=args.font_type,
                 optimizer=optimizer,
             )
@@ -331,7 +342,7 @@ def main():
                 visualise=args.visualise,
                 frequency=args.print_freq,
                 writer=writer,
-                idx2label=dict(map(reversed, paintings_train.label_dict.items())),
+                idx2label=dict(map(reversed, paintings_train1.label_dict.items())),
                 font=args.font_type,
                 number_output_classes=number_output_classes,
             )
@@ -343,7 +354,31 @@ def main():
             writer.add_scalar("val_acc", val_acc, global_step=epoch)
 
     writer.close()
-    print(paintings_train.label2idx)
+    print(paintings_train1.label2idx)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--csv_path',
+                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/artuk_lists",
+                        type=Path)
+    parser.add_argument('--im_dir',
+                        default="/scratch/shared/beegfs/oncescu/pictures_project/artuk/paintings",
+                        type=Path)
+    parser.add_argument('--ckpt_path', default="data/modelartuk.pt", type=Path)
+    parser.add_argument('--num_workers', default=4, type=int)
+    parser.add_argument('--batch_size', default=256, type=int)
+    parser.add_argument('--num_epochs', default=25, type=int)
+    parser.add_argument('--dataset', default="five-class")
+    parser.add_argument('--learning_rate', default=0.1, type=float)
+    parser.add_argument('--print_freq', default=10, type=int)
+    parser.add_argument('--font_type',
+                        default="/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+                        type=Path)
+    parser.add_argument('--im_suffix', default=".jpg",
+                        help="the suffix for images in the dataset")
+    parser.add_argument('--visualise', default="data/artuk/visualise/*", type=Path)
+    args = parser.parse_args()
+    initialise(args)
 
 
 if __name__ == '__main__':
